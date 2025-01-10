@@ -1,9 +1,15 @@
 import bmesh
-import bpy
 import mathutils
 import numpy as np
 import os
 
+from math import radians, degrees, atan, tan
+
+# BLENDER UTILS
+import bpy
+
+# TODO: you probably can clean out the dominant plane stuff from the GP data
+# TODO: make one single GP camera and keyframe it for the duration of the animation.
 
 def get_active_camera():
     '''
@@ -13,100 +19,7 @@ def get_active_camera():
     if active_camera:
         return active_camera
     else:
-        raise Exception('No camera found in the scene.') 
-
-def create_gp_camera(gp_object):
-    '''
-    Create a new camera based on the active camera to frame the given Grease Pencil object tightly.
-    Args:
-        - gp_object: Grease Pencil object to be framed.
-    Returns:
-        - New camera framing the Grease Pencil object.
-    '''
-    active_camera = get_active_camera()
-    
-    # Create the new camera:
-    bpy.ops.object.select_all(action='DESELECT')
-    active_camera.select_set(True)
-    bpy.context.view_layer.objects.active = active_camera
-    bpy.ops.object.duplicate()
-    gp_camera = bpy.context.view_layer.objects.active
-    gp_camera.name = 'gp_camera_tmp'
-    bpy.context.scene.camera = gp_camera
-
-    # Frame the Grease Pencil object:
-    bpy.context.view_layer.objects.active = gp_object
-    bpy.ops.object.select_all(action='DESELECT')
-    gp_object.select_set(True)
-    bpy.ops.view3d.camera_to_view_selected()
-
-    # Restore camera:
-    bpy.context.scene.camera = active_camera
-
-    return gp_camera
-
-def hide_everything_except_object(target_gp_object):
-    for obj in bpy.data.objects:
-        obj.hide_render = obj != target_gp_object
-
-def get_render_visibility_data():
-    obj_visibility_data = {}
-    for obj in bpy.data.objects:
-        obj_visibility_data[obj.name] = obj.hide_render
-    return obj_visibility_data
-
-def restore_hidden_objects(obj_visibility_data): 
-    for obj_name in obj_visibility_data:
-        obj = bpy.data.objects.get(obj_name)
-        obj.hide_render = False
-
-def collect_render_settings(target_gp_object):
-     render_settings = {
-        'file_format': bpy.context.scene.render.image_settings.file_format,
-        'ffmpeg_format': bpy.context.scene.render.ffmpeg.format,
-        'ffmpeg_codec': bpy.context.scene.render.ffmpeg.codec,
-        'filepath': bpy.context.scene.render.filepath,
-        'fps': bpy.context.scene.render.fps,
-        'color_mode': bpy.context.scene.render.image_settings.color_mode,
-        'film_transparent': bpy.context.scene.render.film_transparent,
-        'use_lights': target_gp_object.data.layers.active.use_lights
-    }
-     return render_settings
-
-def set_render_settings(target_gp_object):
-    bpy.context.scene.render.image_settings.file_format = 'PNG'
-    bpy.context.scene.render.image_settings.color_mode = 'RGBA'
-    bpy.context.scene.render.fps = 24                                 # Set frames per second
-    bpy.context.scene.render.image_settings.color_mode = 'RGBA'
-    bpy.context.scene.render.film_transparent = True
-    target_gp_object.data.layers.active.use_lights = False
-
-def restore_render_settings(render_settings, target_gp_object):
-    bpy.context.scene.render.image_settings.file_format = render_settings.get('file_format')
-    bpy.context.scene.render.ffmpeg.format =  render_settings.get('ffmpeg_format')
-    bpy.context.scene.render.ffmpeg.codec = render_settings.get('ffmpeg_codec')
-    bpy.context.scene.render.fps = render_settings.get('fps')
-    bpy.context.scene.render.image_settings.color_mode = render_settings.get('color_mode')
-    bpy.context.scene.render.film_transparent = render_settings.get('film_transparent')
-    target_gp_object.data.layers.active.use_lights = render_settings.get('use_lights')
-
-def restore_camera(scene_camera, gp_camera):
-    scene_camera.select_set(True)
-    bpy.context.scene.camera = scene_camera
-    bpy.data.objects.remove(gp_camera, do_unlink=True)
-
-def export_single_gp_object_animation(gp_camera, output_path):
-    '''
-    Render the Grease Pencil camera, focused on the target object, and save the frame fles in the output_path.
-    '''
-    # Set camera:
-    bpy.context.scene.camera = gp_camera
-
-    # Execute render:
-    bpy.context.scene.render.filepath = output_path
-    bpy.ops.render.render(write_still=True)
-    print('Rendered image saved at {}'.format(output_path))
-
+        raise Exception('No camera found in the scene.')
 
 def get_selected_gp_object():
     '''
@@ -121,84 +34,26 @@ def get_selected_gp_object():
         raise Exception('Please select a Grease Pencil object.')
     return selected_obj
 
-def get_output_directory(foldername='script_data'):
+def create_plane_with_name(gp_object_name):
     '''
-    Return the output directory: a folder with name 'foldername' where the working file is located. 
-    '''
-    working_directory = bpy.path.abspath('//')
-    data_folder_path = os.path.join(working_directory, foldername)
-    os.makedirs(data_folder_path, exist_ok=True)
-    return data_folder_path
-
-def get_frame_size(frame_path):
-    '''
-    Given the path of an image, return its width and height.
-    '''
-    image = bpy.data.images.load(frame_path)
-    width = image.size[0]
-    height = image.size[1]
-    bpy.data.images.remove(image)
-
-    return width, height
-    
-def create_gp_preview_plane(gp_object):
-    '''
-    Create a plane and fix the default orientation.
+    Create a plane.
     Args:
-        - gp_object: Grease Pencil object the plane will be named after. 
-                     We will also place it on the same collections in the outliner. 
+        - gp_object_name: name of the target Grease Pencil object. 
     Returns:
         -The resulting plane.
     '''
-    name = gp_object.name
-
-    # Create plane
     bpy.ops.mesh.primitive_plane_add(size=1)
-    plane = bpy.context.active_object
-    plane.name = '{}_mesh'.format(name)
+    plane_object = bpy.context.active_object
+    return plane_object
 
-    # Assert collections:
+def insert_plane_in_gp_object_collections(plane_object, gp_object):
+    '''
+    Insert the given plane object in all the collections the given Grease Pencil object is present.
+    '''
     for collection in gp_object.users_collection:
-        collection.objects.link(plane)
-    
-    # Rotate 90 degrees around the Y axis in Edit Mode:
-    rotate_plane_in_edit_mode(plane, 'Y', 90)
-    rotate_plane_in_edit_mode(plane, 'X', 90)
-    
-    return plane
-
-def set_gp_preview_plane_material(name, plane_object, frame_list):
-    # Create material
-    mat = bpy.data.materials.new(name='{}_preview_mat'.format(name))
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    
-    # Clear default nodes
-    nodes.clear()
-    
-    # Create nodes
-    output = nodes.new('ShaderNodeOutputMaterial')
-    bsdf = nodes.new('ShaderNodeBsdfPrincipled')
-    tex = nodes.new('ShaderNodeTexImage')
-    
-    # Set up image sequence
-    tex.image_user.use_auto_refresh = True
-    tex.image_user.frame_duration = len(frame_list)
-    
-    # Load first image of sequence
-    tex.image = bpy.data.images.load(frame_list[0])
-    tex.image.alpha_mode = 'STRAIGHT'
-    tex.image.source = 'SEQUENCE'
-    
-    # Connect nodes
-    links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
-    links.new(tex.outputs['Alpha'], bsdf.inputs['Alpha'])
-    links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
-    
-    # Assign material to plane
-    plane_object.data.materials.append(mat)
-
+        objects_names = [object.name for object in collection.objects]
+        if plane_object.name not in objects_names:
+            collection.objects.link(plane_object)
 
 def rotate_plane_in_edit_mode(plane_obj, axis='Y', degrees=90):
     '''
@@ -210,7 +65,6 @@ def rotate_plane_in_edit_mode(plane_obj, axis='Y', degrees=90):
     Returns:
         The rotated plane.
     '''
-    from math import radians
 
     # Enter Edit Mode
     bpy.ops.object.mode_set(mode='EDIT')
@@ -233,160 +87,96 @@ def rotate_plane_in_edit_mode(plane_obj, axis='Y', degrees=90):
 
     return plane_obj
 
-
-def calculate_grease_pencil_data(gp_object, frame_number):
+def get_output_directory(foldername='script_data'):
     '''
-    Calculate the bounding box dimesions (W, H, D) of the given Grease Pencil object. 
-    '''    
-    # Initialize min/max coordinates
-    min_coords = mathutils.Vector((float('inf'), float('inf'), float('inf')))
-    max_coords = mathutils.Vector((float('-inf'), float('-inf'), float('-inf')))
-    
-    points = []
-
-    # Iterate through all strokes
-    gpencil_data = gp_object.data
-    for layer in gpencil_data.layers:
-        if not layer.hide:  # Skip hidden layers
-            for frame_number_check in range(frame_number, 0, -1):  # Decreasing range
-                for frame in layer.frames:
-                    if frame.frame_number == frame_number_check:
-                        for stroke in frame.strokes:
-                            for point in stroke.points:
-                                # Get the point position in world space
-                                local_pos = point.co
-                                world_pos = gp_object.matrix_world @ local_pos
-
-                                points.append([world_pos.x, world_pos.y, world_pos.z])
-                                
-                                # Update bounding box coordinates
-                                min_coords.x = min(min_coords.x, world_pos.x)
-                                min_coords.y = min(min_coords.y, world_pos.y)
-                                min_coords.z = min(min_coords.z, world_pos.z)
-                                
-                                max_coords.x = max(max_coords.x, world_pos.x)
-                                max_coords.y = max(max_coords.y, world_pos.y)
-                                max_coords.z = max(max_coords.z, world_pos.z)
-                        break
-                else:
-                    continue
-                break
-
-    
-    # Transform global bounding box back to local space
-    #min_coords = gp_object.matrix_world.inverted() @ min_coords
-    #max_coords = gp_object.matrix_world.inverted() @ max_coords
-
-    # Calculate bounding box dimensions
-    dimensions = max_coords - min_coords
-    
-    # Calculate bounding bond center:
-    bbox_center = (min_coords + max_coords) / 2
-
-    bbox_data = {'dimensions': dimensions, 'center': bbox_center}
-
-    # Calculate dominant plane:
-    dominant_plane_data = {}
-    if len(points) > 3:
-
-        # Convert points to a NumPy array
-        points_array = np.array(points)
-
-        # Calculate the centroid (mean position)
-        centroid = np.mean(points_array, axis=0)
-
-        # Perform PCA using NumPy's covariance matrix and eigenvalue decomposition
-        cov_matrix = np.cov(points_array.T)  # Covariance matrix
-        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)  # Eigen decomposition
-
-        # Sort eigenvalues and eigenvectors in descending order
-        sorted_indices = np.argsort(eigenvalues)[::-1]
-        eigenvectors = eigenvectors[:, sorted_indices]
-
-        # The normal to the plane is the eigenvector with the smallest eigenvalue
-        normal_vector = eigenvectors[:, 2]  # Smallest eigenvalue corresponds to the plane normal
-        plane_axes = (eigenvectors[:, 0], eigenvectors[:, 1])  # Two dominant directions on the plane
-
-        # Convert results back to mathutils.Vector for Blender compatibility
-        centroid = mathutils.Vector(centroid)
-        normal = mathutils.Vector(normal_vector)
-        axes = (mathutils.Vector(plane_axes[0]), mathutils.Vector(plane_axes[1]))
-
-        dominant_plane_data = {'centroid': centroid, 'normal': normal, 'axes': axes}
-   
-    return (bbox_data, dominant_plane_data)
-
-
-def calculate_grease_pencil_bounding_box(gp_object, frame_number):
+    Return the output directory: a folder with name 'foldername' where the working file is located. 
     '''
-    Calculate the bounding box dimesions (W, H, D) of the given Grease Pencil object. 
-    '''    
-    # Initialize min/max coordinates
-    min_coords = mathutils.Vector((float('inf'), float('inf'), float('inf')))
-    max_coords = mathutils.Vector((float('-inf'), float('-inf'), float('-inf')))
-    
-    # Iterate through all strokes
-    gpencil_data = gp_object.data
-    for layer in gpencil_data.layers:
-        if not layer.hide:  # Skip hidden layers
-            for frame_number_check in range(frame_number, 0, -1):  # Decreasing range
-                for frame in layer.frames:
-                    if frame.frame_number == frame_number_check:
-                        for stroke in frame.strokes:
-                            for point in stroke.points:
-                                # Get the point position in world space
-                                local_pos = point.co
-                                world_pos = gp_object.matrix_world @ local_pos
-                                
-                                # Update bounding box coordinates
-                                min_coords.x = min(min_coords.x, world_pos.x)
-                                min_coords.y = min(min_coords.y, world_pos.y)
-                                min_coords.z = min(min_coords.z, world_pos.z)
-                                
-                                max_coords.x = max(max_coords.x, world_pos.x)
-                                max_coords.y = max(max_coords.y, world_pos.y)
-                                max_coords.z = max(max_coords.z, world_pos.z)
-                        break
-                else:
-                    continue
-                break
+    working_directory = bpy.path.abspath('//')
+    data_folder_path = os.path.join(working_directory, foldername)
+    os.makedirs(data_folder_path, exist_ok=True)
+    return data_folder_path
 
-    
-    # Transform global bounding box back to local space
-    #min_coords = gp_object.matrix_world.inverted() @ min_coords
-    #max_coords = gp_object.matrix_world.inverted() @ max_coords
+def get_render_visibility_data():
+    obj_visibility_data = {}
+    for obj in bpy.data.objects:
+        obj_visibility_data[obj.name] = obj.hide_render
+    return obj_visibility_data
 
-    # Calculate bounding box dimensions
-    dimensions = max_coords - min_coords
+def hide_everything_except_object(object):
+    for obj in bpy.data.objects:
+        obj.hide_render = obj != object
+    bpy.context.view_layer.update()
 
-    # Calculate bounding bond center:
-    bbox_center = (min_coords + max_coords) / 2
+def restore_hidden_objects(obj_visibility_data): 
+    for obj_name in obj_visibility_data:
+        obj = bpy.data.objects.get(obj_name)
+        if obj:
+            obj.hide_render = obj_visibility_data[obj_name]
+    bpy.context.view_layer.update()
 
-    bbox_data = {'dimensions': dimensions, 'center': bbox_center}
-    return bbox_data
+def get_start_and_end_frames():
+    frame_start = bpy.context.scene.frame_start
+    frame_end = bpy.context.scene.frame_end
+    return(frame_start, frame_end)
 
+def set_current_frame(frame_number):
+    bpy.context.scene.frame_set(frame_number)
 
-def visualize_gp_bounding_box(gp_object, bbox_data):
-    """
-    Visualize the center and bounding box of a Grease Pencil object.
-    Args:
-        - gp_object: The Grease Pencil object.
-        - bbox_data: Dictionary containing 'center' and 'dimensions' of the bounding box.
-        - wireframe: Whether to set the bounding box cube to wireframe mode (default: True).
-    """
-    center = bbox_data['center']
-    dimensions = bbox_data['dimensions']
-    current_frame = bpy.context.scene.frame_current
+def create_tmp_camera_from_camera(source_camera, name=None):
+    bpy.ops.object.select_all(action='DESELECT')
+    source_camera.select_set(True)
+    bpy.context.view_layer.objects.active = source_camera
+    bpy.ops.object.duplicate()
+    tmp_camera = bpy.context.view_layer.objects.active
+    if name:
+        tmp_camera.name = 'gp_camera_tmp'
+    else: 
+        tmp_camera.name = '{}_tmp'.format(source_camera.name)
 
-    # Sphere for the center visualization
-    sphere_name = f"{gp_object.name}_center_sphere"
-    sphere = bpy.data.objects.get(sphere_name)
+    return tmp_camera
+
+def create_tmp_camera(name=None):
+    camera_data = bpy.data.cameras.new(name=name)
+    camera_object = bpy.data.objects.new(name, camera_data)
+    bpy.context.scene.collection.objects.link(camera_object)
+
+    return camera_object
+
+def frame_object(target_object, camera):
+    bpy.context.scene.camera = camera
+    bpy.context.view_layer.objects.active = target_object
+    bpy.ops.object.select_all(action='DESELECT')
+    target_object.select_set(True)
+    bpy.ops.view3d.camera_to_view_selected()
+
+def set_scene_camera(camera):
+    bpy.context.scene.camera = camera
+
+def export_single_gp_object_animation(camera, output_path):
+    '''
+    Render the Grease Pencil camera, focused on the target object, and save the frame fles in the output_path.
+    '''
+    # Set camera:
+    bpy.context.scene.camera = camera
+
+    # Execute render:
+    bpy.context.scene.render.filepath = output_path
+    bpy.ops.render.render(write_still=True)
+    print('Rendered image saved at {}'.format(output_path))
+
+def restore_camera(original_camera, current_camera):
+    original_camera.select_set(True)
+    bpy.context.scene.camera = original_camera
+    bpy.data.objects.remove(current_camera, do_unlink=True)
+
+def create_sphere(name, location, frame_number):
+    sphere = bpy.data.objects.get(name)
 
     if not sphere:
         # Create sphere if it doesn't exist
-        bpy.ops.mesh.primitive_uv_sphere_add(radius=0.1, location=center)
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=0.1, location=location)
         sphere = bpy.context.object
-        sphere.name = sphere_name
+        sphere.name = name
 
         # Assign red material
         mat = bpy.data.materials.new(name="RedMaterial")
@@ -394,35 +184,37 @@ def visualize_gp_bounding_box(gp_object, bbox_data):
         sphere.data.materials.append(mat)
     else:
         # Update sphere location
-        sphere.location = center
+        sphere.location = location
 
     # Keyframe the sphere location
-    sphere.keyframe_insert(data_path="location", frame=current_frame)
+    sphere.keyframe_insert(data_path="location", frame=frame_number)
 
     # Set the sphere as not renderable
     sphere.hide_render = True
 
-    # Cube for the bounding box visualization
-    cube_name = f"{gp_object.name}_bounding_box"
-    cube = bpy.data.objects.get(cube_name)
+def create_cube(name, location, dimensions, frame_number):
+    cube = bpy.data.objects.get(name)
 
     if not cube:
         # Create cube if it doesn't exist
-        bpy.ops.mesh.primitive_cube_add(size=1, location=center)
+        bpy.ops.mesh.primitive_cube_add(size=1, location=location)
         cube = bpy.context.object
-        cube.name = cube_name
+        cube.name = name
 
         # Make the cube wireframe
         cube.display_type = 'WIRE'
+
+        # Update cube location and scale
+        cube.scale = dimensions
     else:
         # Update cube location and scale
-        cube.location = center
+        cube.location = location
         cube.scale = dimensions
 
     # Keyframe the cube location, rotation, and scale
-    cube.keyframe_insert(data_path="location", frame=current_frame)
-    cube.keyframe_insert(data_path="rotation_euler", frame=current_frame)
-    cube.keyframe_insert(data_path="scale", frame=current_frame)
+    cube.keyframe_insert(data_path="location", frame=frame_number)
+    cube.keyframe_insert(data_path="rotation_euler", frame=frame_number)
+    cube.keyframe_insert(data_path="scale", frame=frame_number)
 
     # Set the cube as not renderable
     cube.hide_render = True
@@ -430,173 +222,492 @@ def visualize_gp_bounding_box(gp_object, bbox_data):
     # Make the cube wireframe
     cube.display_type = 'WIRE'
 
+def get_frame_size(frame_path):
+    '''
+    Given the path of an image, return its width and height.
+    '''
+    image = bpy.data.images.load(frame_path)
+    width = image.size[0]
+    height = image.size[1]
+    bpy.data.images.remove(image)
 
-def align_plane_to_dominant_plane(plane, target_plane_data):
+    return width, height
+
+def create_material(name):
+    mat = bpy.data.materials.new(name=name)
+    return mat
+
+def collect_render_settings(target_gp_object):
+    render_settings = {
+        'file_format': bpy.context.scene.render.image_settings.file_format,
+        'ffmpeg_format': bpy.context.scene.render.ffmpeg.format,
+        'ffmpeg_codec': bpy.context.scene.render.ffmpeg.codec,
+        'filepath': bpy.context.scene.render.filepath,
+        'fps': bpy.context.scene.render.fps,
+        'color_mode': bpy.context.scene.render.image_settings.color_mode,
+        'film_transparent': bpy.context.scene.render.film_transparent,
+        #'use_lights': target_gp_object.data.use_lights,
+        'layers_use_light': {}
+    }
+    for layer in target_gp_object.data.layers:
+        render_settings['layers_use_light'][layer] = layer.use_lights
+    return render_settings
+
+def set_render_settings(target_gp_object):
+    bpy.context.scene.render.image_settings.file_format = 'PNG'
+    bpy.context.scene.render.image_settings.color_mode = 'RGBA'
+    bpy.context.scene.render.fps = 24                                 # Set frames per second
+    bpy.context.scene.render.image_settings.color_mode = 'RGBA'
+    bpy.context.scene.render.film_transparent = True
+    #target_gp_object.data.use_lights = False
+    for layer in target_gp_object.data.layers:
+        layer.use_lights = False
+    
+
+def restore_render_settings(render_settings, target_gp_object):
+    bpy.context.scene.render.image_settings.file_format = render_settings.get('file_format')
+    bpy.context.scene.render.ffmpeg.format =  render_settings.get('ffmpeg_format')
+    bpy.context.scene.render.ffmpeg.codec = render_settings.get('ffmpeg_codec')
+    bpy.context.scene.render.fps = render_settings.get('fps')
+    bpy.context.scene.render.image_settings.color_mode = render_settings.get('color_mode')
+    bpy.context.scene.render.film_transparent = render_settings.get('film_transparent')
+    #target_gp_object.data.use_lights = render_settings.get('use_lights')
+    for layer in target_gp_object.data.layers:
+        layer.use_lights = render_settings['layers_use_light'][layer]
+    
+def get_render_aspect_ratio():
+    return bpy.context.scene.render.resolution_x / bpy.context.scene.render.resolution_y
+
+def update_view_layer():
+    bpy.context.view_layer.update()
+
+# UTILS
+
+def align_object_to_vector(object, normal):
     """
-    Align a plane object to the calculated dominant plane.
+    Align the Z axiz of the given object to the vector.
+    
     Args:
         - plane: The plane object to align.
-        - plane_data: Dictionary containing 'centroid', 'normal', and 'axes' from the dominant plane.
+        - target_plane_data: Dictionary containing 'centroid', 'normal', and 'axes' from the dominant plane.
+        - camera: The active camera in the scene for view direction.
     """
-    # Extract plane data
-    centroid = target_plane_data['centroid']
-    normal = target_plane_data['normal']
-    axes = target_plane_data['axes']  # Two orthogonal vectors on the plane
-
-    # New axes:
-     # Define the upward Y-axis in world space
-    world_y = mathutils.Vector((0, 1, 0))
-    # Calculate the new X-axis (orthogonal to the normal and world Y-axis)
-    x_axis = normal.cross(world_y).normalized()
-    # If the normal is parallel to the world Y-axis, fallback to another direction
-    if x_axis.length < 1e-6:  # Check for near-zero vector
-        world_x = mathutils.Vector((1, 0, 0))  # Use world X-axis instead
-        x_axis = normal.cross(world_x).normalized()
-    # Recalculate the new Y-axis to ensure orthogonality
+    # Step 1: Stabilize the axes
+    world_up = mathutils.Vector((0, 0, 1))  # World Z-axis as the 'up' direction
+    
+    # Calculate the new X-axis: perpendicular to the normal and the world-up vector
+    x_axis = world_up.cross(normal).normalized()
+    
+    # If the normal is nearly parallel to the world_up vector, use a fallback
+    if x_axis.length < 1e-6:
+        fallback_up = mathutils.Vector((1, 0, 0))  # Use world X-axis as fallback
+        x_axis = fallback_up.cross(normal).normalized()
+    
+    # Calculate the new Y-axis: orthogonal to both the normal and the new X-axis
     y_axis = normal.cross(x_axis).normalized()
 
-    # Set the plane's location to the centroid
-    plane.location = centroid
+    # Step 2: Build a rotation matrix
+    rotation_matrix = mathutils.Matrix((x_axis, y_axis, normal)).transposed()
 
-    # Create a 3x3 rotation matrix from the plane axes
-    rotation_matrix = mathutils.Matrix((
-        normal, #axes[0],  # Local X-axis of the plane
-        y_axis, #axes[1],  # Local Y-axis of the plane
-        x_axis,#normal,   # Local Z-axis of the plane
-    )).transposed()  # Transpose to convert axes to column vectors
+    # Step 3: Apply rotation and location to the plane using quaternions
+    object.rotation_euler = rotation_matrix.to_euler()
 
-    # Apply the rotation matrix to the plane
-    plane.rotation_euler = rotation_matrix.to_euler()
+    update_view_layer()
 
-def create_mesh_plane_on_dominant_plane(gp_object, plane_data, plane_size=1.0):
+def get_euler_rotation_in_degrees(obj):
     """
-    Create a mesh plane aligned with the dominant plane of a Grease Pencil object.
+    Get the Euler rotation in degrees for the current frame, matching the Blender UI.
     Args:
-        - gp_object: The Grease Pencil object.
-        - plane_data: Dictionary containing 'centroid', 'normal', and 'axes' from the dominant plane.
-        - plane_size: The size of the plane.
+        - obj: The object to evaluate.
     Returns:
-        - The created mesh plane object.
+        - A tuple (x, y, z) representing the rotation in degrees.
     """
-    centroid = plane_data['centroid']
-    normal = plane_data['normal']
-    axes = plane_data['axes']  # Two orthogonal vectors on the plane
+    # Get the evaluated dependency graph
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated_obj = obj.evaluated_get(depsgraph)
 
-    # Create a new mesh plane
-    bpy.ops.mesh.primitive_plane_add(size=plane_size, location=centroid)
-    plane = bpy.context.object
-    plane.name = f"{gp_object.name}_dominant_plane"
+    # Extract the world matrix
+    world_matrix = evaluated_obj.matrix_world
 
-    # Rotate 90 degrees around the Y axis in Edit Mode:
-    #rotate_plane_in_edit_mode(plane, 'Y', 90)
-    #rotate_plane_in_edit_mode(plane, 'X', 90)    
+    # Extract rotation as Euler
+    rotation_euler = world_matrix.to_euler('XYZ')  # Ensure consistent order
 
-    # Create a rotation matrix from the dominant plane's axes
-    rotation_matrix = mathutils.Matrix((
-        axes[0],  # Local X-axis of the plane
-        axes[1],  # Local Y-axis of the plane
-        normal,   # Local Z-axis of the plane
-    )).transposed()  # Transpose to match Blender's conventions
+    # Convert to degrees
+    rotation_x_deg = degrees(rotation_euler.x)
+    rotation_y_deg = degrees(rotation_euler.y)
+    rotation_z_deg = degrees(rotation_euler.z)
 
-    # Apply the rotation matrix to the plane
-    plane.rotation_euler = rotation_matrix.to_euler()
+    return [rotation_x_deg, rotation_y_deg, rotation_z_deg]
 
-    return plane
-
-def transform_preview_plane(plane_obj, gp_obj, frame_path, frame_number):
-    '''
-    For the given plane we want to:
-        - Have the same size as the Grease PEncil object.
-        - Be located at the same place as the Grease Pencil object.
-        - Face the active camera.
-    '''
-    (bbox_data, dominant_plane_data) = calculate_grease_pencil_data(gp_obj, frame_number)
-    #dominant_plane = create_mesh_plane_on_dominant_plane(gp_obj, dominant_plane_data, 5.0)
-    align_plane_to_dominant_plane(plane_obj, dominant_plane_data)
-
-    # visualize_gp_bounding_box(gp_obj, bbox_data)
-
-    # Set plane aspect ratio:
-    (width, height) = get_frame_size(frame_path)
-    plane_obj.scale.z = 1
-    plane_obj.scale.y = width/height
-
-    # Grease Pencil object size:
-    gp_obj_dimensions = bbox_data.get('dimensions')
-    gp_width = gp_obj_dimensions.y
-    gp_height = gp_obj_dimensions.z
-    gp_aspect_ratio = gp_width/gp_height
-    
-    # Plane object size:
-    plane_width = plane_obj.scale.y
-    plane_height = plane_obj.scale.z
-    pln_aspect_ratio = plane_width/plane_height 
-    
-    if pln_aspect_ratio < gp_aspect_ratio:
-        plane_obj.scale.y = gp_width
-        plane_obj.scale.z = plane_obj.scale.y / pln_aspect_ratio
-    else:
-        plane_obj.scale.z = gp_height
-        plane_obj.scale.y = plane_obj.scale.z * pln_aspect_ratio 
-
-    # Set new Plane object location:
-    gp_obj_center = bbox_data.get('center')
-    plane_obj.location = gp_obj_center
-
-    # Set key frame for location, rotation and scale:
-    plane_obj.keyframe_insert(data_path="location", frame=frame_number)
-    plane_obj.keyframe_insert(data_path="rotation_euler", frame=frame_number)
-    plane_obj.keyframe_insert(data_path="scale", frame=frame_number)
-
-    return plane_obj
+def insert_loc_rot_scale_keyframe(target_object, frame_number):
+    target_object.keyframe_insert(data_path="location", frame=frame_number)
+    target_object.keyframe_insert(data_path="rotation_euler", frame=frame_number)
+    target_object.keyframe_insert(data_path="scale", frame=frame_number)
 
 
+class MeshPlaneFromGreasePencilObjectFactory(object):
 
-def main():
+    def __init__(self, grease_pencil_object):
+        self.gp_object = grease_pencil_object
+        self.gp_data = GreasePencilObjectData(self.gp_object)
+        self.scene_camera = get_active_camera()
+        self.gp_camera = create_tmp_camera(name='{}_gp_tmp'.format(self.scene_camera.name))
+        self.plane_object = self.create_gp_preview_plane('{}_mesh'.format(self.gp_object.name))
+        self.plane_data = {}
+        self.frame_list = []
 
-    scene_camera = get_active_camera()
+    def create_gp_preview_plane(self, name):
+        plane_object = create_plane_with_name(name)
+        plane_object.name = '{}'.format(name)
+        insert_plane_in_gp_object_collections(plane_object, self.gp_object)
 
-    gp_object = get_selected_gp_object()
-    
-    plane_object = create_gp_preview_plane(gp_object)
+        return plane_object
 
-    output_directory = get_output_directory()
-    frames_output_path = os.path.join(output_directory, gp_object.name)
 
-    render_visibility_data = get_render_visibility_data()
-    hide_everything_except_object(gp_object)
-
-    render_settings = collect_render_settings(gp_object)
-
-    set_render_settings(gp_object)
-
-    frame_start = bpy.context.scene.frame_start
-    frame_end = bpy.context.scene.frame_end
-
-    frame_list = []
-    for frame_number in range(frame_start, frame_end + 1):
-        bpy.context.scene.frame_set(frame_number)
-
-        gp_camera = create_gp_camera(gp_object)
-
-        frame_output_path = '{}_{}.png'.format(frames_output_path, str(frame_number).zfill(4))
-        frame_list.append(frame_output_path)
-
-        export_single_gp_object_animation(gp_camera, frame_output_path)
-
-        restore_camera(scene_camera, gp_camera)
+    def create_mesh_plane(self):
+        '''
         
-        transform_preview_plane(plane_object, gp_object, frame_output_path, frame_number)
+        '''
+        output_directory = get_output_directory()
+        frames_output_path = os.path.join(output_directory, self.gp_object.name)
+
+        render_visibility_data = get_render_visibility_data()
+        hide_everything_except_object(self.gp_object)
+
+        render_settings = collect_render_settings(self.gp_object)
+
+        set_render_settings(self.gp_object)
+
+        (frame_start, frame_end) = get_start_and_end_frames()
+        #frame_start = 1 
+        #frame_end = frame_start
+
+        for frame_number in range(frame_start, frame_end + 1):
+            set_current_frame(frame_number)
+
+            self.gp_data.calculate_grease_pencil_data_for_frame(frame_number)
+            #self.gp_data.visualize_gp_bounding_box(frame_number)
+
+            self.set_gp_camera(frame_number)
+
+            frame_output_path = '{}_{}.png'.format(frames_output_path, str(frame_number).zfill(4))
+            self.frame_list.append(frame_output_path)
+
+            export_single_gp_object_animation(self.gp_camera, frame_output_path)
+
+            self.transform_preview_plane(frame_output_path, frame_number)
+
+        self.set_gp_preview_plane_material()
+
+        restore_camera(self.scene_camera, self.gp_camera)
+
+        restore_hidden_objects(render_visibility_data)
+
+        restore_render_settings(render_settings, gp_object)
+
+        #gp_object.hide_viewport = True
+        #gp_object.hide_render = True 
+
+
+    def set_gp_preview_plane_material(self):
+        # Create material
+        mat = create_material(name='{}_preview_mat'.format(self.gp_object.name))
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        
+        # Clear default nodes
+        nodes.clear()
+        
+        # Create nodes
+        output = nodes.new('ShaderNodeOutputMaterial')
+        bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+        tex = nodes.new('ShaderNodeTexImage')
+        
+        # Set up image sequence
+        tex.image_user.use_auto_refresh = True
+        tex.image_user.frame_duration = len(self.frame_list)
+        
+        # Load first image of sequence
+        tex.image = bpy.data.images.load(self.frame_list[0])
+        tex.image.alpha_mode = 'STRAIGHT'
+        tex.image.source = 'SEQUENCE'
+        
+        # Connect nodes
+        links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
+        links.new(tex.outputs['Alpha'], bsdf.inputs['Alpha'])
+        links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+        
+        # Assign material to plane
+        self.plane_object.data.materials.append(mat)
+
+    def set_gp_camera(self, frame_number):
+        '''
+        Create a new camera based on the active camera to frame the given Grease Pencil object tightly.
+        Args:
+            - gp_object: Grease Pencil object to be framed.
+        Returns:
+            - New camera framing the Grease Pencil object.
+        '''
+
+        # Ensure the aspect ratio matches the scene camera's
+        self.gp_camera.data.lens = self.scene_camera.data.lens
+        self.gp_camera.data.sensor_width = self.scene_camera.data.sensor_width
+        self.gp_camera.data.sensor_height = self.scene_camera.data.sensor_height
+
+        # Align the camera to the bounding box dominant plane.
+        self.gp_camera.location = self.gp_data.bbox.get(frame_number).get('center')
+
+        normal = self.gp_data.dplane.get(frame_number).get('normal')
+        align_object_to_vector(self.gp_camera, normal)
+
+        # Compute view data:
+        bbox_y = self.gp_data.bbox.get(frame_number).get('dimensions').y
+        bbox_x = self.gp_data.bbox.get(frame_number).get('dimensions').x
+        gp_object_width = (bbox_y**2 + bbox_x**2)**0.5
+        gp_object_height = self.gp_data.bbox.get(frame_number).get('dimensions').z
+
+        # Compute required distance for the camera to fit the GP object
+        horizontal_fov = self.gp_camera.data.angle_x
+        horizontal_distance = gp_object_width / (2 * tan(horizontal_fov / 2))
+        vertical_fov = self.gp_camera.data.angle_y
+        vertical_distance = gp_object_height / (2 * tan(vertical_fov / 2))
+        required_distance = max(vertical_distance, horizontal_distance)
+        
+        # Move the camera back along its local Z-axis
+        #camera_direction = gp_camera.matrix_world.to_quaternion() @ mathutils.Vector((0, 0, -1))
+        self.gp_camera.location += normal * required_distance
+
+        # NOTE: This should suffice location-wise, but for some reason sometimes 
+        # the camera view doesn't match the GP object. We are using the built-in function now, 
+        # hoping that, being very close to the final destination, it will give a good result:
+        frame_object(self.gp_object, self.gp_camera)
+
+        self.ensure_tmp_camera_faces_gp_object(frame_number)
+
+        insert_loc_rot_scale_keyframe(self.gp_camera, frame_number)
+
+        # Restore scene camera 
+        set_scene_camera(self.scene_camera)  
+
+
+    def ensure_tmp_camera_faces_gp_object(self, frame_number):
+        """
+        Ensures the camera is facing the GP object's center.
+        
+        Args:
+            - camera: The camera object.
+            - gp_center: The world coordinates of the GP object's center.
+        """
+        # Camera's forward direction (local Z-axis in world coordinates)
+        camera_forward = self.gp_camera.matrix_world.to_quaternion() @ mathutils.Vector((0, 0, -1))
+
+        # Vector pointing from the camera to the GP object's center
+        object_center = self.gp_data.bbox.get(frame_number).get('center')
+        to_gp_center = (object_center - self.gp_camera.location).normalized()
+
+        # Check if the camera is facing the GP object
+        if camera_forward.dot(to_gp_center) < 0:
+            # Rotate the camera 180° around its local Y-axis to flip it
+            self.gp_camera.rotation_euler.rotate_axis("Y", radians(180))
+            print("Camera orientation adjusted to face the GP object.")
+
+    def transform_preview_plane(self, frame_path, frame_number):
+        '''
+        For the given plane we want to:
+            - Have the same size as the Grease PEncil object.
+            - Be located at the same place as the Grease Pencil object.
+            - Face the active camera.
+        '''
+        align_object_to_vector(self.plane_object, self.gp_data.dplane.get(frame_number).get('normal'))
+        #self.fix_orientation_flickering(frame_number)
+
+        # Set plane aspect ratio:
+        (width, height) = get_frame_size(frame_path)
+        self.plane_object.scale.y = 1
+        self.plane_object.scale.x = width/height
+
+        # Grease Pencil object size:
+        gp_obj_dimensions = self.gp_data.bbox.get(frame_number).get('dimensions')
+        gp_width = (gp_obj_dimensions.y**2 + gp_obj_dimensions.x**2)**0.5
+        #gp_width = max(gp_obj_dimensions.y, gp_obj_dimensions.x)
+        gp_height = gp_obj_dimensions.z
+        gp_aspect_ratio = gp_width/gp_height
+        
+        # Plane object size:
+        plane_width = self.plane_object.scale.x
+        plane_height = self.plane_object.scale.y
+        pln_aspect_ratio = plane_width/plane_height 
+        
+        if pln_aspect_ratio < gp_aspect_ratio or (gp_height * pln_aspect_ratio) < gp_width:
+            self.plane_object.scale.x = gp_width
+            self.plane_object.scale.y = self.plane_object.scale.x / pln_aspect_ratio
+        else:
+            self.plane_object.scale.y = gp_height
+            self.plane_object.scale.x = self.plane_object.scale.y * pln_aspect_ratio 
+
+        # Set new Plane object location:
+        gp_obj_center = self.gp_data.bbox.get(frame_number).get('center')
+        self.plane_object.location = gp_obj_center
+
+        # Set key frame for location, rotation and scale:
+        insert_loc_rot_scale_keyframe(self.plane_object, frame_number)
+
+        self.plane_data[frame_number] = get_euler_rotation_in_degrees(self.plane_object)
+
+
+    def fix_orientation_flickering(self, frame_number):
+        '''
+        Ocassionally when appliying the rotation matrix the plane might be flipped. 
+        Here we check if there was flip and we correct it in that case.
+        '''
+        if not frame_number-1 in self.plane_data:
+            return
+
+        [current_x_degrees, current_y_degrees, current_z_degrees] = get_euler_rotation_in_degrees(self.plane_object)
+        [prev_x_degrees, prev_y_degrees, prev_z_degrees] = self.plane_data.get(frame_number-1)
+
+        delta_z = abs(current_z_degrees - prev_z_degrees)
+
+        if 179 <= delta_z  <= 270:
+            print('Flip detected. Correcting')
+            self.plane_object.rotation_euler.z += radians(180)
+            #plane_obj.keyframe_insert(data_path="rotation_euler", frame=frame_number)
+
     
-    set_gp_preview_plane_material(gp_object.name, plane_object, frame_list)
 
-    restore_hidden_objects(render_visibility_data)
+class GreasePencilObjectData(object):
+    '''
+    This class gets a Grease Pencil object and stores a dictionary with the following structure:
+    {
+        frame_number(int): {
+            'bbox': {
+                'dimensions': (vector)  - Dimensions in the x, y, z axis of the bounding box of the GP object
+                'center': (vector)  - Center of the bounding box.
+            }
+            'dplane':{
+                'centroid': (vector) - Centroid of the cominant plane of the Grease Pencil object
+                'normal': (vector) - Normal vector of the dominant plane of the GP object.
+                'axes': (tuple of two vectors) - Vecotrs aligned with the other two axes.
+            }
+            
+        }
+    '''
+    def __init__(self, grease_pencil_object):
+        self.gp_object = grease_pencil_object
+        self.bbox = {}
+        self.dplane = {}
 
-    restore_render_settings(render_settings, gp_object)
+    def _calculate_bounding_box_data_at_frame(self, frame_number):
+        # Initialize min/max coordinates
+        min_coords = mathutils.Vector((float('inf'), float('inf'), float('inf')))
+        max_coords = mathutils.Vector((float('-inf'), float('-inf'), float('-inf')))
+        
+        points = []
 
-    #gp_object.hide_viewport = True
-    #gp_object.hide_render = True 
+        # Iterate through all strokes
+        gpencil_data = self.gp_object.data
+        for layer in gpencil_data.layers:
+            if not layer.hide:  # Skip hidden layers
+                for frame_number_check in range(frame_number, 0, -1):  # Decreasing range
+                    for frame in layer.frames:
+                        if frame.frame_number == frame_number_check:
+                            for stroke in frame.strokes:
+                                for point in stroke.points:
+                                    # Get the point position in world space
+                                    local_pos = point.co
+                                    world_pos = self.gp_object.matrix_world @ local_pos
+
+                                    points.append([world_pos.x, world_pos.y, world_pos.z])
+                                    
+                                    # Update bounding box coordinates
+                                    min_coords.x = min(min_coords.x, world_pos.x)
+                                    min_coords.y = min(min_coords.y, world_pos.y)
+                                    min_coords.z = min(min_coords.z, world_pos.z)
+                                    
+                                    max_coords.x = max(max_coords.x, world_pos.x)
+                                    max_coords.y = max(max_coords.y, world_pos.y)
+                                    max_coords.z = max(max_coords.z, world_pos.z)
+                            break
+                    else:
+                        continue
+                    break
+
+        # Calculate bounding box dimensions
+        dimensions = max_coords - min_coords
+        
+        # Calculate bounding bond center:
+        bbox_center = (min_coords + max_coords) / 2
+
+        # Save data
+        self.bbox[frame_number]['dimensions'] = dimensions
+        self.bbox[frame_number]['center'] = bbox_center
+
+        return points
+    
+    def _calculate_dominant_plane_data_at_frame(self, frame_number, points):
+        if len(points) > 3:
+
+            # Convert points to a NumPy array
+            points_array = np.array(points)
+
+            # Calculate the centroid (mean position)
+            centroid = np.mean(points_array, axis=0)
+
+            # Perform PCA using NumPy's covariance matrix and eigenvalue decomposition
+            cov_matrix = np.cov(points_array.T)  # Covariance matrix
+            eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)  # Eigen decomposition
+
+            # Sort eigenvalues and eigenvectors in descending order
+            sorted_indices = np.argsort(eigenvalues)[::-1]
+            eigenvectors = eigenvectors[:, sorted_indices]
+
+            # The normal to the plane is the eigenvector with the smallest eigenvalue
+            normal_vector = eigenvectors[:, 2]  # Smallest eigenvalue corresponds to the plane normal
+            plane_axes = (eigenvectors[:, 0], eigenvectors[:, 1])  # Two dominant directions on the plane
+
+            # Convert results back to mathutils.Vector for Blender compatibility
+            centroid = mathutils.Vector(centroid)
+            normal = mathutils.Vector(normal_vector)
+            axes = (mathutils.Vector(plane_axes[0]), mathutils.Vector(plane_axes[1]))
+
+            # Save data
+            self.dplane[frame_number]['centroid'] = centroid
+            self.dplane[frame_number]['normal'] = normal
+            self.dplane[frame_number]['axes'] = axes
+
+    def calculate_grease_pencil_data_for_frame(self, frame_number):
+        '''
+        Calculate the bounding box dimesions (W, H, D) of the given Grease Pencil object,
+        as well the dominant plane data () 
+        '''
+        self.bbox[frame_number] = {}
+        points = self._calculate_bounding_box_data_at_frame(frame_number)
+        self.dplane[frame_number] = {}
+        self._calculate_dominant_plane_data_at_frame(frame_number, points)
+
+    def visualize_gp_bounding_box(self, frame_number):
+        """
+        Visualize the center and bounding box of a Grease Pencil object.
+        Args:
+            - gp_object: The Grease Pencil object.
+            - bbox_data: Dictionary containing 'center' and 'dimensions' of the bounding box.
+            - wireframe: Whether to set the bounding box cube to wireframe mode (default: True).
+        """
+        center = self.bbox.get(frame_number).get('center')
+        dimensions = self.bbox.get(frame_number).get('dimensions')
+
+        # Sphere for the center visualization
+        sphere_name = '{}_center_sphere'.format(gp_object.name)
+        create_sphere(sphere_name, center, frame_number)
+
+        # Cube for the bounding box visualization
+        cube_name = '{}_bounding_box'.format(gp_object.name)
+        create_cube(cube_name, center, dimensions, frame_number)
+
 
 
 if __name__ == '__main__':
-    main()
+    gp_object = get_selected_gp_object()
+    plane_from_gp_factory = MeshPlaneFromGreasePencilObjectFactory(gp_object)
+    plane_from_gp_factory.create_mesh_plane()
